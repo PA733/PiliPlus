@@ -23,7 +23,7 @@ jobs:
       - name: Setup flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          channel: beta
           flutter-version-file: pubspec.yaml
 
       - name: Set and Extract version

@@ -6,7 +6,11 @@ import 'package:PiliPlus/common/widgets/flutter/text_field/adaptive_text_selecti
 import 'package:PiliPlus/common/widgets/flutter/text_field/editable_text.dart';
 import 'package:flutter/cupertino.dart' hide EditableText, EditableTextState;
 import 'package:flutter/material.dart'
-    hide EditableText, EditableTextState, AdaptiveTextSelectionToolbar;
+    hide
+        EditableText,
+        EditableTextState,
+        AdaptiveTextSelectionToolbar,
+        SpellCheckSuggestionsToolbar;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart'
     show SelectionChangedCause, SuggestionSpan;

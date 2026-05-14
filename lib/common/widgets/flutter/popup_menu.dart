@@ -2,9 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-library;
-
-import 'package:flutter/material.dart';
+import 'package:flutter/material.dart' hide PopupMenuItem;
 
 class CustomPopupMenuItem<T> extends PopupMenuEntry<T> {
   const CustomPopupMenuItem({
@@ -114,7 +112,7 @@ class _CustomPopupMenuDividerState extends State<CustomPopupMenuDivider> {
 // dart format off
 class _PopupMenuDefaultsM3 extends PopupMenuThemeData {
   _PopupMenuDefaultsM3(this.context)
-      : super(elevation: 3.0);
+    : super(elevation: 3.0);
 
   final BuildContext context;
   late final ThemeData _theme = Theme.of(context);
@@ -123,8 +121,8 @@ class _PopupMenuDefaultsM3 extends PopupMenuThemeData {
 
   @override WidgetStateProperty<TextStyle?>? get labelTextStyle {
     return WidgetStateProperty.resolveWith((Set<WidgetState> states) {
-      // TODO(quncheng): Update this hard-coded value to use the latest tokens.
-      final TextStyle style = _textTheme.labelLarge!;
+    // TODO(quncheng): Update this hard-coded value to use the latest tokens.
+    final TextStyle style = _textTheme.labelLarge!;
       if (states.contains(WidgetState.disabled)) {
         return style.apply(color: _colors.onSurface.withValues(alpha: 0.38));
       }

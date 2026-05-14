@@ -11,7 +11,8 @@ library;
 
 import 'package:PiliPlus/common/widgets/flutter/text_field/editable_text.dart';
 import 'package:flutter/cupertino.dart' hide EditableText, EditableTextState;
-import 'package:flutter/material.dart' hide EditableText, EditableTextState;
+import 'package:flutter/material.dart'
+    hide EditableText, EditableTextState, AdaptiveTextSelectionToolbar;
 import 'package:flutter/rendering.dart';
 
 /// The default context menu for text selection for the current platform.
