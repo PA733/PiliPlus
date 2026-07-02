@@ -845,7 +845,7 @@ class PlPlayerController with BlockConfigMixin {
   bool shouldUseAndroidHdrForCurrentSource([int? qualityCode]) {
     final targetQuality = qualityCode ?? _currentQualityCode;
     return Pref.androidHdrPlayback &&
-        Platform.isAndroid &&
+        (Platform.isAndroid || Platform.isIOS) &&
         !isLive &&
         targetQuality != null &&
         _hdrQualityCodes.contains(targetQuality) &&
@@ -854,7 +854,7 @@ class PlPlayerController with BlockConfigMixin {
 
   Future<bool> _shouldUseAndroidHdrBackend() async {
     final enabled = Pref.androidHdrPlayback;
-    final android = Platform.isAndroid;
+    final android = Platform.isAndroid || Platform.isIOS;
     final hdrQuality = _isHdrQuality;
     final requiresMpv = _requiresMpvOnlyFeature;
     if (!enabled || !android || isLive || !hdrQuality || requiresMpv) {

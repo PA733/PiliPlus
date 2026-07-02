@@ -60,6 +60,7 @@ class AndroidHdrPlaybackBackend extends PlaybackBackend {
       'videoUrl': dataSource.videoSource,
       'audioUrl': dataSource.audioSource,
       'isFileSource': dataSource is FileSource,
+      'qualityCode': dataSource.qualityCode,
       'startMs': start?.inMilliseconds ?? 0,
       'durationMs': duration?.inMilliseconds,
       'headers': headers ?? const <String, String>{},
@@ -112,11 +113,20 @@ class AndroidHdrPlaybackBackend extends PlaybackBackend {
   @override
   Widget? buildView({required Color fill, required VideoFitType fit}) {
     final id = _sessionId;
-    if (id == null || !Platform.isAndroid) {
+    if (id == null || !(Platform.isAndroid || Platform.isIOS)) {
       return ColoredBox(color: fill);
     }
     const viewType = 'com.example.piliplus/hdr_player_view';
     final creationParams = {'sessionId': id};
+    if (Platform.isIOS) {
+      return UiKitView(
+        viewType: viewType,
+        layoutDirection: TextDirection.ltr,
+        creationParams: creationParams,
+        creationParamsCodec: const StandardMessageCodec(),
+        hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+      );
+    }
     return PlatformViewLink(
       viewType: 'com.example.piliplus/hdr_player_view',
       surfaceFactory: (context, controller) {
@@ -307,7 +317,7 @@ class AndroidHdrPlaybackBackend extends PlaybackBackend {
   }
 
   static Future<bool> supportsHdr({int? qualityCode}) async {
-    if (!Platform.isAndroid) return false;
+    if (!(Platform.isAndroid || Platform.isIOS)) return false;
     try {
       return await _channel.invokeMethod<bool>('supportsHdr', {
             'qualityCode': qualityCode,

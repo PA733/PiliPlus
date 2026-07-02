@@ -989,17 +989,20 @@ class VideoDetailController extends GetxController
       final audioList = data.dash?.audio;
       if (audioList != null && audioList.isNotEmpty) {
         final useAndroidHdrAudioCompat =
-            Platform.isAndroid &&
+            (Platform.isAndroid || Platform.isIOS) &&
             plPlayerController.shouldUseAndroidHdrForCurrentSource(
               currentVideoQa.value?.code,
             );
+        // AVPlayer 原生支持杜比音频(EC-3)，仅过滤 Hi-Res(FLAC)；
+        // Android Media3 对部分设备的杜比解码不稳定，过滤全部特殊音轨。
         final effectiveAudioList = useAndroidHdrAudioCompat
             ? audioList
                   .where(
-                    (item) =>
-                        item.id != AudioQuality.hiRes.code &&
-                        item.id != AudioQuality.dolby_30250.code &&
-                        item.id != AudioQuality.dolby_30255.code,
+                    (item) => Platform.isIOS
+                        ? item.id != AudioQuality.hiRes.code
+                        : item.id != AudioQuality.hiRes.code &&
+                              item.id != AudioQuality.dolby_30250.code &&
+                              item.id != AudioQuality.dolby_30255.code,
                   )
                   .toList()
             : audioList;

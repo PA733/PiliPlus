@@ -49,7 +49,7 @@ List<SettingsModel> get playSettings => [
     setKey: SettingBoxKey.autoPlayEnable,
     defaultVal: false,
   ),
-  if (Platform.isAndroid)
+  if (Platform.isAndroid || Platform.isIOS)
     const SwitchModel(
       title: '强制 HDR',
       subtitle: '无论设备是否支持，对于 HDR 画质，强制调用 HDR 后端播放',
