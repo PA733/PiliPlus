@@ -74,34 +74,38 @@ final class HdrPlayerPlugin: NSObject, FlutterStreamHandler {
             result(nil)
 
         case "play":
-            requireSession(args, result)?.play()
+            guard let session = requireSession(args, result) else { return }
+            session.play()
             result(nil)
 
         case "pause":
-            requireSession(args, result)?.pause()
+            guard let session = requireSession(args, result) else { return }
+            session.pause()
             result(nil)
 
         case "seekTo":
-            requireSession(args, result)?
-                .seekTo(positionMs: (args?["positionMs"] as? NSNumber)?.int64Value ?? 0)
+            guard let session = requireSession(args, result) else { return }
+            session.seekTo(positionMs: (args?["positionMs"] as? NSNumber)?.int64Value ?? 0)
             result(nil)
 
         case "setPlaybackSpeed":
-            requireSession(args, result)?
-                .setPlaybackSpeed((args?["speed"] as? NSNumber)?.floatValue ?? 1)
+            guard let session = requireSession(args, result) else { return }
+            session.setPlaybackSpeed((args?["speed"] as? NSNumber)?.floatValue ?? 1)
             result(nil)
 
         case "setVolume":
-            requireSession(args, result)?
-                .setVolume((args?["volume"] as? NSNumber)?.floatValue ?? 1)
+            guard let session = requireSession(args, result) else { return }
+            session.setVolume((args?["volume"] as? NSNumber)?.floatValue ?? 1)
             result(nil)
 
         case "setFitMode":
-            requireSession(args, result)?.setFitMode(args?["fitMode"] as? String ?? "contain")
+            guard let session = requireSession(args, result) else { return }
+            session.setFitMode(args?["fitMode"] as? String ?? "contain")
             result(nil)
 
         case "screenshot":
-            result(requireSession(args, result)?.screenshot())
+            guard let session = requireSession(args, result) else { return }
+            result(session.screenshot())
 
         case "dispose":
             if let sessionId = args?["sessionId"] as? Int {
@@ -119,8 +123,15 @@ final class HdrPlayerPlugin: NSObject, FlutterStreamHandler {
         _ args: [String: Any]?,
         _ result: @escaping FlutterResult
     ) -> HdrPlayerSession? {
-        guard let sessionId = args?["sessionId"] as? Int else { return nil }
-        return sessions[sessionId]
+        guard let sessionId = args?["sessionId"] as? Int else {
+            result(FlutterError(code: "missing_session", message: "sessionId is required", details: nil))
+            return nil
+        }
+        guard let session = sessions[sessionId] else {
+            result(FlutterError(code: "invalid_session", message: "session \(sessionId) does not exist", details: nil))
+            return nil
+        }
+        return session
     }
 
     private static func supportsHdr(qualityCode: Int?) -> Bool {

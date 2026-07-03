@@ -761,7 +761,7 @@ abstract final class Pref {
       _setting.get(SettingBoxKey.enableHA, defaultValue: true);
 
   static bool get androidHdrPlayback =>
-      Platform.isAndroid &&
+      (Platform.isAndroid || Platform.isIOS) &&
       _setting.get(SettingBoxKey.androidHdrPlayback, defaultValue: false);
 
   static Set<int> get danmakuBlockType => Set<int>.from(
