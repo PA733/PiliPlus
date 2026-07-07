@@ -5,11 +5,13 @@ sealed class DataSource {
   final String videoSource;
   final String? audioSource;
   final int? qualityCode;
+  final String? frameRate;
 
   DataSource({
     required this.videoSource,
     required this.audioSource,
     this.qualityCode,
+    this.frameRate,
   });
 }
 
@@ -18,6 +20,7 @@ class NetworkSource extends DataSource {
     required super.videoSource,
     required super.audioSource,
     super.qualityCode,
+    super.frameRate,
   });
 }
 

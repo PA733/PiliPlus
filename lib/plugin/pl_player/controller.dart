@@ -921,6 +921,8 @@ class PlPlayerController with BlockConfigMixin {
         'Referer': HttpString.baseUrl,
       },
       fit: videoFit.value,
+      width: width,
+      height: height,
     );
   }
 
@@ -1394,10 +1396,30 @@ class PlPlayerController with BlockConfigMixin {
     });
   }
 
+  DateTime? _hdrLastRetry;
+
   void _handleBackendError(String event) {
     if (!isAndroidHdrBackend) return;
     Future.microtask(() async {
       final seekTo = position;
+      // Transient mid-stream errors (flaky PCDN range handling) are
+      // survivable: rebuild the HDR session once at the current position;
+      // only fall back to SDR when errors repeat within 30s.
+      final now = DateTime.now();
+      final canRetry =
+          _hdrLastRetry == null ||
+          now.difference(_hdrLastRetry!) > const Duration(seconds: 30);
+      if (canRetry && !_isAndroidHdrAudioError(event)) {
+        _hdrLastRetry = now;
+        final wasPlaying = playerStatus.isPlaying;
+        await _disposeAndroidHdrBackend();
+        await _createAndroidHdrBackend(dataSource, seekTo, duration.value);
+        await _initializePlayer();
+        if (!wasPlaying) {
+          await pause(notify: false);
+        }
+        return;
+      }
       if (!_androidHdrAudioDisabled && _isAndroidHdrAudioError(event)) {
         _androidHdrAudioDisabled = true;
         final wasPlaying = playerStatus.isPlaying;
@@ -1435,6 +1457,7 @@ class PlPlayerController with BlockConfigMixin {
         videoSource: source.videoSource,
         audioSource: null,
         qualityCode: source.qualityCode,
+        frameRate: source.frameRate,
       ),
       FileSource() => source,
     };

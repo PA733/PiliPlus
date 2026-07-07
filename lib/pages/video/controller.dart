@@ -766,6 +766,7 @@ class VideoDetailController extends GetxController
               videoSource: video ?? videoUrl!,
               audioSource: audio ?? audioUrl,
               qualityCode: currentVideoQa.value?.code,
+              frameRate: firstVideo.frameRate,
             ),
       seekTo: seek,
       duration:

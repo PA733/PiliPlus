@@ -69,7 +69,10 @@ final class HdrPlayerPlugin: NSObject, FlutterStreamHandler {
                 startMs: (args?["startMs"] as? NSNumber)?.int64Value ?? 0,
                 headers: args?["headers"] as? [String: String] ?? [:],
                 fitMode: args?["fitMode"] as? String ?? "contain",
-                qualityCode: args?["qualityCode"] as? Int
+                qualityCode: args?["qualityCode"] as? Int,
+                frameRate: args?["frameRate"] as? String,
+                width: args?["width"] as? Int,
+                height: args?["height"] as? Int
             )
             result(nil)
 

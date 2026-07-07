@@ -47,7 +47,10 @@ final class HdrPlayerSession: NSObject {
         startMs: Int64,
         headers: [String: String],
         fitMode: String,
-        qualityCode: Int?
+        qualityCode: Int?,
+        frameRate: String? = nil,
+        width: Int? = nil,
+        height: Int? = nil
     ) {
         setFitMode(fitMode)
         pendingStartMs = startMs
@@ -59,7 +62,10 @@ final class HdrPlayerSession: NSObject {
                     videoUrl: videoUrl,
                     audioUrl: audioUrl,
                     isFileSource: isFileSource,
-                    qualityCode: qualityCode
+                    qualityCode: qualityCode,
+                    frameRate: frameRate,
+                    width: width,
+                    height: height
                 )
                 await MainActor.run { [weak self] in
                     self?.attachItem(bridge: bridge, headers: headers)
@@ -84,14 +90,27 @@ final class HdrPlayerSession: NSObject {
         item.preferredForwardBufferDuration = 0
         self.item = item
 
-        let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-        ])
-        item.add(output)
-        videoOutput = output
-
         observeItem(item)
         player.replaceCurrentItem(with: item)
+        // Watchdog: if the item never becomes ready, surface an error so the
+        // Dart side can fall back instead of showing a black view forever.
+        // Only fail when nothing has been fetched — if bytes are flowing the
+        // item is merely buffering on a slow connection, so keep waiting.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self, weak item] in
+            guard let self, !self.disposed, let item, item.status == .unknown else { return }
+            let transferred = item.accessLog()?.events.last?.numberOfBytesTransferred ?? 0
+            if transferred > 0 { return }
+            self.reportError(
+                NSError(
+                    domain: "HdrPlayer",
+                    code: -1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "player not ready within 12s, no data transferred",
+                    ]
+                )
+            )
+        }
         if pendingStartMs > 0 {
             let target = CMTime(value: pendingStartMs, timescale: 1000)
             player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
@@ -144,7 +163,20 @@ final class HdrPlayerSession: NSObject {
     }
 
     func screenshot() -> FlutterStandardTypedData? {
-        guard let output = videoOutput, let item else { return nil }
+        guard let item else { return nil }
+        // Attach the BGRA (SDR) output tap lazily: keeping it on the item
+        // during normal playback pulls the pipeline out of the EDR/HDR path.
+        let output: AVPlayerItemVideoOutput
+        if let existing = videoOutput {
+            output = existing
+        } else {
+            output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            ])
+            item.add(output)
+            videoOutput = output
+            Thread.sleep(forTimeInterval: 0.15)
+        }
         let time = item.currentTime()
         guard output.hasNewPixelBuffer(forItemTime: time) || item.status == .readyToPlay,
               let buffer = output.copyPixelBuffer(forItemTime: time, itemTimeForDisplay: nil)
@@ -302,10 +334,16 @@ final class HdrPlayerSession: NSObject {
             isAudioError = dashError.isAudioError
         }
         let nsError = error as NSError
+        var logDetail = ""
+        if let last = item?.errorLog()?.events.last {
+            var uri = last.uri ?? "-"
+            if uri.count > 120 { uri = String(uri.prefix(120)) + "…" }
+            logDetail = " || log[\(last.errorStatusCode) \(last.errorComment ?? "")] \(uri)"
+        }
         send(
             "error",
             [
-                "message": error.localizedDescription,
+                "message": error.localizedDescription + logDetail,
                 "errorCode": nsError.code,
                 "errorCodeName": "\(nsError.domain)(\(nsError.code))",
                 "cause": (nsError.userInfo[NSUnderlyingErrorKey] as? NSError)?.description ?? "",

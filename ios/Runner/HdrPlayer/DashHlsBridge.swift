@@ -2,13 +2,13 @@ import AVFoundation
 import Foundation
 
 enum DashHlsError: LocalizedError {
-    case http(Int)
+    case http(Int, String)
     case parse(String)
     case unsupportedAudio(String)
 
     var errorDescription: String? {
         switch self {
-        case .http(let code): return "HTTP \(code)"
+        case .http(let code, let host): return "HTTP \(code) @ \(host)"
         case .parse(let message): return "parse: \(message)"
         case .unsupportedAudio(let codec): return "unsupported audio codec: \(codec)"
         }
@@ -48,6 +48,7 @@ final class DashHlsBridge: NSObject {
         var totalSize: UInt64 = 0
         var fileLength: UInt64 = 0
         var isVideo: Bool
+        var localInitName: String?
     }
 
     private let headers: [String: String]
@@ -55,26 +56,64 @@ final class DashHlsBridge: NSObject {
     private var localFiles: [String: URL] = [:]  // loader path prefix -> file url
     private let loaderQueue = DispatchQueue(label: "piliplus.hdr.loader")
 
+    /// Playlists are materialised as real files and loaded via file:// —
+    /// AVPlayer's HLS engine only accepts natively fetchable URLs for media,
+    /// and file playlists remove the resource-loader indirection entirely.
+    private let playlistDir: URL = {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("piliplus_hdr_\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
     init(headers: [String: String]) {
         self.headers = headers
         super.init()
     }
 
-    var masterUrl: URL { URL(string: "\(Self.scheme)://bridge/master.m3u8")! }
+    private var server: HdrLocalServer?
+    private(set) var videoCodec: String?
+    private(set) var audioCodec: String?
+    private var frameRate: Double?
+    private var videoWidth = 0
+    private var videoHeight = 0
+
+    deinit {
+        server?.stop()
+        try? FileManager.default.removeItem(at: playlistDir)
+    }
+
+    var masterUrl: URL {
+        guard let server else {
+            return playlistDir.appendingPathComponent("master.m3u8")
+        }
+        return server.baseUrl.appendingPathComponent("master.m3u8")
+    }
 
     /// Builds all playlists. Throws DashHlsError; unsupportedAudio is reported
     /// separately so the Dart side can retry without the audio track.
-    func prepare(videoUrl: String, audioUrl: String?, isFileSource: Bool, qualityCode: Int?) async throws {
+    func prepare(
+        videoUrl: String,
+        audioUrl: String?,
+        isFileSource: Bool,
+        qualityCode: Int?,
+        frameRate: String? = nil,
+        width: Int? = nil,
+        height: Int? = nil
+    ) async throws {
+        self.frameRate = frameRate.flatMap(Double.init)
+        self.videoWidth = width ?? 0
+        self.videoHeight = height ?? 0
         var video = try await loadTrack(url: videoUrl, isFileSource: isFileSource, isVideo: true)
-        if video.videoRange == nil {
-            // Bilibili quality 125 (HDR真彩) is HLG, 126 (Dolby Vision) is PQ.
-            switch qualityCode {
-            case 126: video.videoRange = "PQ"
-            case 125: video.videoRange = "HLG"
-            default: break
-            }
+        if video.videoRange != nil || qualityCode == 125 || qualityCode == 126 {
+            // Always label HDR variants PQ: the device capability screen
+            // accepts PQ but rejects HLG-labelled variants (-12927), while
+            // actual rendering is driven by the bitstream's colr/VUI — HLG
+            // content labelled PQ renders correctly (DV 8.4 precedent).
+            video.videoRange = "PQ"
         }
 
+        videoCodec = video.codec
         var audio: Track? = nil
         if let audioUrl, !audioUrl.isEmpty {
             audio = try await loadTrack(url: audioUrl, isFileSource: isFileSource, isVideo: false)
@@ -83,11 +122,18 @@ final class DashHlsBridge: NSObject {
             }
         }
 
+        audioCodec = audio?.codec
         playlists["video.m3u8"] = mediaPlaylist(for: video, pathTag: "v")
         if let audio {
             playlists["audio.m3u8"] = mediaPlaylist(for: audio, pathTag: "a")
         }
         playlists["master.m3u8"] = masterPlaylist(video: video, audio: audio)
+        for (name, data) in playlists {
+            try data.write(to: playlistDir.appendingPathComponent(name))
+        }
+        let server = HdrLocalServer(root: playlistDir)
+        try server.start()
+        self.server = server
     }
 
     // MARK: - Track loading
@@ -160,6 +206,23 @@ final class DashHlsBridge: NSObject {
         }
 
         guard let moovRange else { throw DashHlsError.parse("moov not found") }
+        // Apple's HLS pipeline only accepts hvc1/dvh1-style sample entries
+        // (parameter sets in the container). Bilibili ships hev1/dvhe for some
+        // HDR variants, which real devices reject with CoreMedia -12927 — the
+        // hvcC/dvcC boxes still carry the parameter sets, so renaming the
+        // sample entry is sufficient. Serve the patched init locally.
+        if let patched = Self.patchSampleEntryFourcc(in: data, moovRange: moovRange) {
+            data = patched
+        }
+        if isVideo, let patched = Self.patchHevcTier(in: data, moovRange: moovRange) {
+            data = patched
+        }
+        if let sidxStart {
+            let name = isVideo ? "init_v.mp4" : "init_a.mp4"
+            try data.subdata(in: 0 ..< Int(sidxStart))
+                .write(to: playlistDir.appendingPathComponent(name))
+            track.localInitName = name
+        }
         let moov = data.subdata(in: moovRange)
         let sample = Self.parseSampleEntry(moov: moov)
         track.codec = sample.codec
@@ -188,7 +251,13 @@ final class DashHlsBridge: NSObject {
             (continuation: CheckedContinuation<(Data, URLResponse), Error>) in
             URLSession.shared.dataTask(with: request) { data, response, error in
                 if let error {
-                    continuation.resume(throwing: error)
+                    let nsError = error as NSError
+                    var info = nsError.userInfo
+                    info[NSLocalizedDescriptionKey] =
+                        "\(nsError.localizedDescription) [\(requestUrl.scheme ?? "?")://\(requestUrl.host ?? "?")]"
+                    continuation.resume(
+                        throwing: NSError(domain: nsError.domain, code: nsError.code, userInfo: info)
+                    )
                 } else if let data, let response {
                     continuation.resume(returning: (data, response))
                 } else {
@@ -198,7 +267,10 @@ final class DashHlsBridge: NSObject {
         }
         guard let http = response as? HTTPURLResponse else { throw DashHlsError.parse("no response") }
         guard http.statusCode == 200 || http.statusCode == 206 else {
-            throw DashHlsError.http(http.statusCode)
+            throw DashHlsError.http(
+                http.statusCode,
+                "\(requestUrl.scheme ?? "?")://\(requestUrl.host ?? "?")"
+            )
         }
         var total = UInt64(data.count)
         if let contentRange = http.value(forHTTPHeaderField: "Content-Range"),
@@ -213,7 +285,17 @@ final class DashHlsBridge: NSObject {
 
     private func mediaUri(for track: Track, pathTag: String) -> String {
         if track.isLocal {
-            return "\(Self.scheme)://bridge/file/\(pathTag)"
+            // mediaserverd rejects absolute file:// URIs inside playlists;
+            // link the media next to the playlist and reference it relatively.
+            let linkName = "\(pathTag).m4s"
+            let linkUrl = playlistDir.appendingPathComponent(linkName)
+            if !FileManager.default.fileExists(atPath: linkUrl.path) {
+                let target = URL(fileURLWithPath: track.url)
+                if (try? FileManager.default.linkItem(at: target, to: linkUrl)) == nil {
+                    try? FileManager.default.createSymbolicLink(at: linkUrl, withDestinationURL: target)
+                }
+            }
+            return linkName
         }
         return track.url
     }
@@ -228,7 +310,11 @@ final class DashHlsBridge: NSObject {
             "#EXT-X-INDEPENDENT-SEGMENTS",
         ]
         let uri = mediaUri(for: track, pathTag: pathTag)
-        lines.append("#EXT-X-MAP:URI=\"\(uri)\",BYTERANGE=\"\(track.initLength)@0\"")
+        if let localInit = track.localInitName {
+            lines.append("#EXT-X-MAP:URI=\"\(localInit)\"")
+        } else {
+            lines.append("#EXT-X-MAP:URI=\"\(uri)\",BYTERANGE=\"\(track.initLength)@0\"")
+        }
         for segment in track.segments {
             lines.append(String(format: "#EXTINF:%.5f,", segment.duration))
             lines.append("#EXT-X-BYTERANGE:\(segment.size)@\(segment.offset)")
@@ -241,9 +327,16 @@ final class DashHlsBridge: NSObject {
     private func masterPlaylist(video: Track, audio: Track?) -> Data {
         var lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-INDEPENDENT-SEGMENTS"]
         var streamInf: [String] = []
-        let bandwidth = video.totalDuration > 0
-            ? Int(Double(video.totalSize) * 8 / video.totalDuration)
-            : 10_000_000
+        // HLS BANDWIDTH is the peak segment bitrate of the variant.
+        func peakRate(_ track: Track) -> Double {
+            track.segments
+                .filter { $0.duration > 0 }
+                .map { Double($0.size) * 8 / $0.duration }
+                .max() ?? 0
+        }
+        var peak = peakRate(video)
+        if let audio { peak += peakRate(audio) }
+        let bandwidth = peak > 0 ? Int(peak) : 10_000_000
         streamInf.append("BANDWIDTH=\(max(bandwidth, 1))")
         var codecs: [String] = []
         if let codec = video.codec { codecs.append(codec) }
@@ -251,17 +344,29 @@ final class DashHlsBridge: NSObject {
         if !codecs.isEmpty {
             streamInf.append("CODECS=\"\(codecs.joined(separator: ","))\"")
         }
+        if videoWidth > 0, videoHeight > 0 {
+            streamInf.append("RESOLUTION=\(videoWidth)x\(videoHeight)")
+        }
         if let range = video.videoRange {
+            // OS 27-generation quirk (A/B verified): a non-SDR VIDEO-RANGE is
+            // rejected with -1002 unless the variant also declares FRAME-RATE.
+            // VIDEO-RANGE itself is required signalling for HDR/Dolby variants
+            // (its absence makes the validator reject dvh1/high-tier HEVC
+            // variants with -12927), so always emit both together.
+            let fps = frameRate ?? 30.0
+            streamInf.append(String(format: "FRAME-RATE=%.3f", fps))
             streamInf.append("VIDEO-RANGE=\(range)")
+        } else if let fps = frameRate {
+            streamInf.append(String(format: "FRAME-RATE=%.3f", fps))
         }
         if audio != nil {
             lines.append(
-                "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"main\",DEFAULT=YES,AUTOSELECT=YES,URI=\"\(Self.scheme)://bridge/audio.m3u8\""
+                "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"main\",DEFAULT=YES,AUTOSELECT=YES,URI=\"audio.m3u8\""
             )
             streamInf.append("AUDIO=\"audio\"")
         }
         lines.append("#EXT-X-STREAM-INF:\(streamInf.joined(separator: ","))")
-        lines.append("\(Self.scheme)://bridge/video.m3u8")
+        lines.append("video.m3u8")
         return lines.joined(separator: "\n").data(using: .utf8)!
     }
 
@@ -355,7 +460,11 @@ final class DashHlsBridge: NSObject {
         let spacePrefix = ["", "A", "B", "C"][Int(profileSpace)]
         parts.append("\(prefix).\(spacePrefix)\(profileIdc)")
         parts.append(String(format: "%X", reversed))
-        parts.append("\(tierFlag == 0 ? "L" : "H")\(level)")
+        // Always claim Main tier: device capability screening rejects
+        // High-tier declarations (-12927) although the hardware decodes the
+        // stream fine; the tier flag does not affect decoding behaviour.
+        _ = tierFlag
+        parts.append("L\(level)")
         // Constraint bytes, trailing zero bytes trimmed.
         var constraints: [UInt8] = (6 ..< 12).map { hvcC[$0] }
         while constraints.count > 1, constraints.last == 0 {
@@ -448,6 +557,50 @@ final class DashHlsBridge: NSObject {
         }
     }
 
+    /// Renames hev1→hvc1 / dvhe→dvh1 sample entries inside the moov's stsd.
+    /// Returns patched data, or nil when nothing needed changing.
+    private static func patchSampleEntryFourcc(in data: Data, moovRange: Range<Int>) -> Data? {
+        let moov = data.subdata(in: moovRange)
+        guard let stsdIdx = moov.firstRange(of: Data("stsd".utf8))?.lowerBound else {
+            return nil
+        }
+        // stsd payload: version/flags(4) entry_count(4), then first sample
+        // entry: size(4) fourcc(4). fourcc sits at stsd type offset + 16.
+        let fourccOffset = stsdIdx + 16
+        guard fourccOffset + 4 <= moov.count else { return nil }
+        let fourcc = moov.readType(fourccOffset)
+        let replacement: String
+        switch fourcc {
+        case "hev1": replacement = "hvc1"
+        case "dvhe": replacement = "dvh1"
+        default: return nil
+        }
+        var patched = data
+        let absolute = moovRange.lowerBound + fourccOffset
+        patched.replaceSubrange(
+            absolute ..< absolute + 4,
+            with: Data(replacement.utf8)
+        )
+        return patched
+    }
+
+    /// Clears the general_tier_flag inside hvcC. Device capability screening
+    /// rejects High-tier declarations in the init (-12927) even though the
+    /// hardware decodes such streams fine; the tier bit only affects
+    /// conformance limits, not decoding behaviour.
+    private static func patchHevcTier(in data: Data, moovRange: Range<Int>) -> Data? {
+        let moov = data.subdata(in: moovRange)
+        guard let idx = moov.firstRange(of: Data("hvcC".utf8))?.lowerBound else {
+            return nil
+        }
+        let byte1 = idx + 4 + 1
+        guard byte1 < moov.count, moov[byte1] & 0x20 != 0 else { return nil }
+        var patched = data
+        let absolute = moovRange.lowerBound + byte1
+        patched[absolute] = patched[absolute] & ~0x20
+        return patched
+    }
+
     /// Finds a child box inside a sample entry body starting at `offset`.
     /// Returns the payload (without the 8-byte header).
     private static func findBox(in body: Data, offset: Int, type: String) -> Data? {
@@ -491,6 +644,9 @@ final class DashHlsBridge: NSObject {
         for _ in 0 ..< count {
             guard cursor + 12 <= sidx.count else { throw DashHlsError.parse("sidx truncated") }
             let sizeField = sidx.readU32(cursor)
+            if sizeField & 0x8000_0000 != 0 {
+                throw DashHlsError.parse("hierarchical sidx not supported")
+            }
             let referencedSize = UInt64(sizeField & 0x7FFF_FFFF)
             let duration = Double(sidx.readU32(cursor + 4)) / Double(timescale)
             result.append((anchor, referencedSize, duration))

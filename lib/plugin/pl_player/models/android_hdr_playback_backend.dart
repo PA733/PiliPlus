@@ -46,6 +46,8 @@ class AndroidHdrPlaybackBackend extends PlaybackBackend {
     bool play = false,
     Map<String, String>? headers,
     VideoFitType fit = VideoFitType.contain,
+    int? width,
+    int? height,
   }) async {
     _ensureEventSubscription();
     final sessionId = await _channel.invokeMethod<int>('create');
@@ -60,6 +62,9 @@ class AndroidHdrPlaybackBackend extends PlaybackBackend {
       'videoUrl': dataSource.videoSource,
       'audioUrl': dataSource.audioSource,
       'isFileSource': dataSource is FileSource,
+      'frameRate': dataSource.frameRate,
+      'width': width,
+      'height': height,
       'qualityCode': dataSource.qualityCode,
       'startMs': start?.inMilliseconds ?? 0,
       'durationMs': duration?.inMilliseconds,
